@@ -51,6 +51,7 @@ input,textarea{font-family:inherit}
 .nav-item.active{background:var(--red);color:#fff;box-shadow:inset 3px 0 0 var(--gold)}
 .nav-item.active svg{opacity:1}
 .nav-item .cnt{margin-left:auto;font-size:11px;background:rgba(255,255,255,.12);padding:1px 8px;border-radius:20px}
+.nav-item .nav-t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .nav-item.active .cnt{background:rgba(255,255,255,.22)}
 .side-foot{margin-top:auto;padding:14px 18px;font-size:11px;color:var(--sidebar-ink2)}
 .side-foot button{background:none;border:none;color:var(--sidebar-ink2);font-size:11px;text-decoration:underline;padding:2px 0}
@@ -442,15 +443,27 @@ function buildOrder(mode, chapterId){
   return qs.map(q=>q.id);
 }
 
-/* 随机刷题范围：默认全部 */
-let randomScope = {filter:"all", chapter:"all"};
+/* 随机刷题范围：默认全部，可按章节起止区间 */
+let randomScope = {filter:"all", from:"all", to:"all"};
+const CH_INDEX = id => BANK.chapters.findIndex(c=>c.id===id);
 function randomPool(){
   let pool = allQuestions.slice();
-  if(randomScope.chapter!=="all") pool = pool.filter(q=>q._ch===randomScope.chapter);
+  if(randomScope.from!=="all" || randomScope.to!=="all"){
+    let a = randomScope.from==="all" ? 0 : CH_INDEX(randomScope.from);
+    let b = randomScope.to==="all" ? CH_INDEX("c17") : CH_INDEX(randomScope.to);
+    if(a>b){ const t=a; a=b; b=t; }
+    if(a>=0 && b>=0) pool = pool.filter(q=>{ const i=CH_INDEX(q._ch); return i>=a && i<=b; });
+  }
   if(randomScope.filter==="unanswered") pool = pool.filter(q=>!state.answers[q.id]);
   else if(randomScope.filter==="wrong") pool = pool.filter(q=>state.wrong[q.id]);
   else if(randomScope.filter==="fav") pool = pool.filter(q=>state.favs.includes(q.id));
   return pool;
+}
+function chapterOptions(sel){
+  const chs = BANK.chapters.filter(c=>/^c\d+$/.test(c.id));
+  return `<option value="all">全部章节</option>` + chs.map(c=>{
+    return `<option value="${c.id}"${sel===c.id?" selected":""}>${esc(c.title)}</option>`;
+  }).join("");
 }
 function scopeBar(count){
   return `<div class="scope-bar">
@@ -460,24 +473,22 @@ function scopeBar(count){
       <option value="wrong">我的错题</option>
       <option value="fav">我的收藏</option>
     </select></label>
-    <label>章节<select id="scope-chapter">
-      <option value="all">全部章节</option>
-      ${BANK.chapters.map(c=>`<option value="${c.id}">${esc(c.title)}</option>`).join("")}
-    </select></label>
+    <label>从<select id="scope-from">${chapterOptions()}</select></label>
+    <label>到<select id="scope-to">${chapterOptions()}</select></label>
     <span class="scope-count">共 ${count} 题</span>
   </div>`;
 }
 function bindScopeBar(){
-  const sf=$("#scope-filter"), sc=$("#scope-chapter");
-  if(!sf||!sc) return;
-  sf.value = randomScope.filter; sc.value = randomScope.chapter;
-  sf.onchange = ()=>startRandom(sf.value, sc.value);
-  sc.onchange = ()=>startRandom(sf.value, sc.value);
+  const sf=$("#scope-filter"), sa=$("#scope-from"), sb=$("#scope-to");
+  if(!sf||!sa||!sb) return;
+  sf.value = randomScope.filter; sa.value = randomScope.from; sb.value = randomScope.to;
+  const apply = ()=>startRandom(sf.value, sa.value, sb.value);
+  sf.onchange = apply; sa.onchange = apply; sb.onchange = apply;
 }
-function startRandom(filter, chapter){
-  randomScope = {filter:filter||"all", chapter:chapter||"all"};
+function startRandom(filter, from, to){
+  randomScope = {filter:filter||"all", from:from||"all", to:to||"all"};
   const pool = randomPool();
-  session = {mode:"random", order:pool.map(q=>q.id).sort(()=>Math.random()-0.5), pos:0, scope:null};
+  session = {mode:"random", order:pool.map(q=>q.id).sort(()=>Math.random()-0.5), pos:0, scope:null, revealed:new Set()};
   if(!session.order.length){ renderRandomEmpty($("#view")); return; }
   renderQuiz($("#view"), session);
   window.scrollTo({top:0});
@@ -493,7 +504,7 @@ function renderNav(){
   box.innerHTML = '<div class="nav-label">章节</div>' + BANK.chapters.map((ch,i)=>
     `<a class="nav-item" href="#/c/${ch.id}" data-nav="ch-${ch.id}">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 5h16M4 12h16M4 19h10"/></svg>
-      <span>${esc(ch.title.replace(/第.章|专题[一二]/,'').trim())}</span>
+      <span class="nav-t">${esc(ch.title)}</span>
       <span class="cnt">${ch.questions.length}</span></a>`).join("");
 }
 function renderPills(){
@@ -514,7 +525,7 @@ function route(){
   const name = parts[0];
   const V = $("#view");
   if(name==="home"){ renderHome(V); }
-  else if(name==="random"){ const pool=randomPool(); session={mode:"random",order:pool.map(q=>q.id).sort(()=>Math.random()-0.5),pos:0,scope:null}; if(!session.order.length){renderRandomEmpty(V);}else{renderQuiz(V,session);} }
+  else if(name==="random"){ const pool=randomPool(); session={mode:"random",order:pool.map(q=>q.id).sort(()=>Math.random()-0.5),pos:0,scope:null,revealed:new Set()}; if(!session.order.length){renderRandomEmpty(V);}else{renderQuiz(V,session);} }
   else if(name==="mistakes"){ session={mode:"mistakes",order:buildOrder("mistakes"),pos:0,scope:null,revealed:new Set()}; if(!session.order.length){emptyView(V,"错题本","暂无错题，继续刷题吧");}else{renderQuiz(V,session);} }
   else if(name==="fav"){ session={mode:"fav",order:buildOrder("fav"),pos:0,scope:null}; if(!session.order.length){emptyView(V,"收藏","还没有收藏题目，刷题时点星标即可收藏");}else{renderQuiz(V,session);} }
   else if(name==="c"){ const cid=parts[1]; if(cid){ session={mode:"chapter",chapterId:cid,order:getChapter(cid).questions.map(q=>q.id),pos:0,scope:null}; renderQuiz(V,session); } }
@@ -638,8 +649,9 @@ function renderQuiz(V, s){
       </div>
     </div>
   </div>`;
-  // 错题本进入时默认不展示旧答案：只有本轮自己提交过的题才恢复解析
-  const canRestore = prev && !s._fresh && (s.mode!=="mistakes" || (s.revealed && s.revealed.has(q.id)));
+  // 随机/错题本默认不展示答案：只有本轮自己提交过的题才恢复解析
+  const autoRestore = (s.mode==="chapter" || s.mode==="fav");
+  const canRestore = prev && !s._fresh && (autoRestore || (s.revealed && s.revealed.has(q.id)));
   if(canRestore){
     restoreAnswered(q, prev);
   }
@@ -674,13 +686,13 @@ function submitAnswer(){
     const letter = letL(pick);
     correct = letter===ansNorm(q);
     ansText = ansTextOf(q);
-    markOpts(pick, correct);
+    if(session.mode!=="random") markOpts(pick, correct);
   }else if(q.type==="multi"){
     if(!pick.length){ toast("请至少选择一个选项"); return; }
     const letters = pick.map(i=>letL(i)).join("");
     correct = letters===ansNorm(q);
     ansText = ansTextOf(q);
-    markOpts(pick, correct);
+    if(session.mode!=="random") markOpts(pick, correct);
   }else{
     if(!pick){ toast("请输入答案"); return; }
     const ok = checkFill(pick, q.answer);
@@ -704,12 +716,32 @@ function submitAnswer(){
   $("#btn-next").style.display="";
   $("#btn-again").style.display="";
   result.className = "result show "+(correct?"ok":"bad");
-  result.innerHTML = `<div class="head">${correct?"回答正确 ✓":"回答错误 ✗"}</div>
-    <div class="ans">正确答案：<b>${esc(ansText)}</b></div>
-    <div class="exp"><b>解析：</b>${esc(q.explain)}</div>`;
+  if(session.mode==="random"){
+    result.innerHTML = `<div class="head">${correct?"回答正确 ✓":"回答错误 ✗"}</div>
+      <button class="btn btn-ghost" style="margin-top:10px" onclick="revealAnswer()">看答案</button>`;
+  }else{
+    result.innerHTML = `<div class="head">${correct?"回答正确 ✓":"回答错误 ✗"}</div>
+      <div class="ans">正确答案：<b>${esc(ansText)}</b></div>
+      <div class="exp"><b>解析：</b>${esc(q.explain)}</div>`;
+  }
   renderPills(); refreshDots();
   const wb=$("#badge-wcnt");
   if(wb && session.mode==="mistakes"){ wb.innerHTML = `错过 <b>${state.wrong[q.id]||0}</b> 次`; }
+}
+function revealAnswer(){
+  const q = currentQ(); const res = $("#result");
+  if(!q || !res) return;
+  const rec = state.answers[q.id] || {};
+  let ansText;
+  if(q.type==="fill"){ ansText = Array.isArray(q.answer)?q.answer.join(" ／ "):q.answer; }
+  else { ansText = ansTextOf(q); }
+  res.innerHTML = `<div class="head">${rec.correct?"回答正确 ✓":"回答错误 ✗"}</div>
+    <div class="ans">正确答案：<b>${esc(ansText)}</b></div>
+    <div class="exp"><b>解析：</b>${esc(q.explain)}</div>`;
+  if(q.type!=="fill"){
+    if(rec.correct){ markOpts([], true); }
+    else { markOpts(String(rec.picked||"").split(",").map(Number).filter(n=>!isNaN(n)), false); }
+  }
 }
 function markOpts(pickIdx, correct){
   const q = currentQ();
