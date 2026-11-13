@@ -544,8 +544,8 @@ function renderRandomEmpty(V){
 
 /* ================= 简答默写 ================= */
 const ESSAY_KEY = "xzx_essay_v1";
-// 内置评分接口（部署 Cloudflare Worker 后填这里，界面不显示、用户零配置；留空则用本地评分）
-const GRADE_API_DEFAULT = "";
+// 内置评分接口（免费、无需注册/密钥；额度用尽或失败时自动回退本地评分）
+const GRADE_API_DEFAULT = "https://text.pollinations.ai/openai";
 let essayState = {ch:"c1", idx:0};
 let gradeCfg = (function(){ try{ return JSON.parse(localStorage.getItem("xzx_grade_cfg_v1")||"{}")||{}; }catch(e){ return {}; } })();
 function essayRec(){ try{ return JSON.parse(localStorage.getItem(ESSAY_KEY)||"{}")||{}; }catch(e){ return {}; } }
@@ -658,7 +658,16 @@ async function remoteGrade(item, ans, endpoint, key){
   if(key) headers["Authorization"] = "Bearer " + key;
   const body = {temperature:0.2, messages:[{role:"system",content:sys},{role:"user",content:user}]};
   if(gradeCfg.model) body.model = gradeCfg.model;
-  const resp = await fetch(endpoint, {method:"POST", headers:headers, body:JSON.stringify(body)});
+  if(/pollinations\.ai/.test(endpoint)){
+    body.model = body.model || "openai";
+    body.referrer = "https://sanabesito.github.io/xixiang-shuati/";
+  }
+  const ctrl = (typeof AbortController !== "undefined") ? new AbortController() : null;
+  let timer = null;
+  if(ctrl) timer = setTimeout(()=>ctrl.abort(), 120000);
+  try{
+    var resp = await fetch(endpoint, {method:"POST", headers:headers, body:JSON.stringify(body), signal: ctrl ? ctrl.signal : undefined});
+  } finally { if(timer) clearTimeout(timer); }
   if(!resp.ok) throw new Error("HTTP "+resp.status);
   const data = await resp.json();
   const txt = (((data||{}).choices||[])[0]||{}).message ? String(data.choices[0].message.content||"") : "";
@@ -686,7 +695,18 @@ function submitEssay(){
   const btn = $("#btn-grade"); if(btn){ btn.disabled = true; btn.textContent = "评分中…"; }
   const done = (g)=>{ if(btn){ btn.disabled=false; btn.textContent="提交评分"; } finishEssay(cur, g); };
   if(endpoint){
-    remoteGrade(cur, ans, endpoint, key).then(done).catch(function(){ toast("模型评分失败，已用本地评分"); done(localGrade(cur, ans)); });
+    const attempt = (n)=>{
+      remoteGrade(cur, ans, endpoint, key).then(done).catch(function(err){
+        if(n < 1 && /HTTP\s+40[29]/.test(String(err && err.message))){
+          if(btn) btn.textContent = "额度排队，静静等一会儿…";
+          setTimeout(()=>attempt(n+1), 22000);
+          return;
+        }
+        toast("模型评分失败，已用本地评分");
+        done(localGrade(cur, ans));
+      });
+    };
+    attempt(0);
   }else{
     done(localGrade(cur, ans));
   }
