@@ -641,10 +641,17 @@ function essayNeed(item){
   const m = (item.q||"").match(/任答([一二三四五六七八九十])点/);
   return m ? Math.min(cn[m[1]]||item.pts.length, item.pts.length) : item.pts.length;
 }
+// 整题满分：每个采分点 2 分（全对 2 分、半对 1 分）；题目可用 item.full 覆盖
+function essayFull(item){
+  if(item && Number(item.full) > 0) return Number(item.full);
+  return Math.max(2, essayNeed(item) * 2);
+}
 function localGrade(item, ans){
   const n = normAns(ans);
   const need = essayNeed(item);
-  // 每个采分点按关键词覆盖比例给分：全覆盖 1 分，只沾到一半 0.5 分，没沾到 0 分
+  const full = essayFull(item);
+  const per = full / need;
+  // 每个采分点按关键词覆盖比例给分：全覆盖满分、只沾到一半半分、没沾到 0 分
   const cover = item.pts.map(function(p){
     const ks = p.k.map(normAns).filter(Boolean);
     if(!ks.length) return 0;
@@ -653,28 +660,32 @@ function localGrade(item, ans){
     if(ks.length === 1 || got / ks.length >= 0.6) return 1;
     return 0.5;
   });
-  let score = Math.round(Math.min(cover.reduce((a,b)=>a+b,0), need) / need * 1000) / 10;
-  if(n.length < 20) score = Math.min(score, 30);
-  const full = cover.filter(x=>x===1).length;
+  let score = Math.round(Math.min(cover.reduce((a,b)=>a+b,0), need) * per * 10) / 10;
+  if(n.length < 20) score = Math.min(score, Math.round(full * 0.3 * 10) / 10);
+  const fullCnt = cover.filter(x=>x===1).length;
   const part = cover.filter(x=>x===0.5).length;
   const comment = n.length < 20 ? "字数太少，建议按“总述—分点—落脚”把要点展开。" :
-    (full >= need ? "要点都覆盖了，注意表述再精炼些。" : (part ? "有 " + part + " 个点只答到一半，把缺的那层意思补上。" : ""));
-  return {score:score, cover:cover, hits:cover.map(x=>x>0), source:"本地评分", comment:comment, reasons:[], need:need};
+    (fullCnt >= need ? "要点都覆盖了，注意表述再精炼些。" : (part ? "有 " + part + " 个点只答到一半，把缺的那层意思补上。" : ""));
+  return {score:score, full:full, per:per, cover:cover, hits:cover.map(x=>x>0), source:"本地评分", comment:comment, reasons:[], need:need};
 }
 async function remoteGrade(item, ans, endpoint, key){
   const need = essayNeed(item);
+  const full = essayFull(item);
+  const per = full / need;
+  const dedCap = Math.min(3, Math.max(1, Math.round(full * 0.25)));
   const sys = [
     "你是高校《习近平新时代中国特色社会主义思想概论》课程的阅卷老师，按采分点逐条批改学生的简答默写。",
-    "评分方法（每个采分点 1 分，最后折算百分制）：",
-    "1. 每个采分点给三档之一：full（完整覆盖，1分）、partial（只答到一半，0.5分）、none（没答到，0分）。",
+    "本题满分 " + full + " 分，共 " + need + " 个采分点，每点 " + (Math.round(per*10)/10) + " 分。",
+    "评分方法：",
+    "1. 每个采分点给三档之一：full（完整覆盖，得满分）、partial（只答到一半，得一半分）、none（没答到，0 分）。",
     "2. 判 full：核心意思到位即可，同义替换、换个说法、合并成一句、调换语序、恰当举例，都算覆盖；不要求出现要点里的原词。",
     "3. 判 partial：方向对但缺一层意思（如只说“是什么”没说“为什么”、只写了半句、要点合并时漏掉其中一项、只罗列关键词没解释、只笼统表态“有世界意义”却没有实质内容）。",
     "4. 判 none：完全没提、意思相反、张冠李戴、只重复题干。",
     "5. 必须逐条独立判定：输出 points 恰好 N 条，i 从 1 到 N 连续、与采分点顺序一致，不许合并、跳号、省略。",
     "6. 学生一句话同时覆盖多条采分点时，对涉及的各条分别判 full，并分别引用对应片段，不要因为“写在一起”就判其中某条 none。",
     "7. 不因篇幅长短、书写风格加分；空话套话不算覆盖。",
-    "8. 学生答案总字数不足 20 字时，总分最多 30 分。",
-    "9. 另给 deduction（0–3 整数表达扣分）：语句混乱、答非所问、明显凑字数才扣，最多 3 分；正常作答给 0。",
+    "8. 学生答案总字数不足 20 字时，总分最多 " + (Math.round(full * 0.3 * 10) / 10) + " 分。",
+    "9. 另给 deduction（0–" + dedCap + " 整数表达扣分，单位是分）：语句混乱、答非所问、明显凑字数才扣，正常作答给 0。",
     "10. 每条 why 不超过 20 字：覆盖的引用学生原话片段，部分覆盖说明缺哪一层，没覆盖说明差什么。",
     "11. comment 一句话（不超过 30 字），指出最该补的那一点。",
     '只输出一个 JSON 对象，不要解释文字、不要 Markdown 代码块：{"points":[{"i":1,"level":"full|partial|none","why":"..."}],"deduction":0,"comment":"..."}'
@@ -735,13 +746,13 @@ async function remoteGrade(item, ans, endpoint, key){
     if(!missArr.length && obj.score == null) throw new Error("解析失败");
   }
   const earned = Math.min(cover.reduce((a,b)=>a+b,0), need);
-  const deduce = Math.max(0, Math.min(5, Math.round(Number(obj.deduction)||0)));
-  let score = Math.round(earned / need * 1000) / 10;
+  const deduce = Math.max(0, Math.min(dedCap, Math.round(Number(obj.deduction)||0)));
+  let score = Math.round(earned * per * 10) / 10;
   score = Math.max(0, Math.round((score - deduce) * 10) / 10);
   const n = normAns(ans);
-  if(n.length < 20) score = Math.min(score, 30);
-  return {score:score, cover:cover, hits:cover.map(x=>x>0), reasons:reasons, source:"模型评分",
-          comment:obj.comment||"", need:need};
+  if(n.length < 20) score = Math.min(score, Math.round(full * 0.3 * 10) / 10);
+  return {score:score, full:full, per:per, cover:cover, hits:cover.map(x=>x>0), reasons:reasons,
+          source:"模型评分", comment:obj.comment||"", need:need};
 }
 function submitEssay(){
   const list = essayList(); const cur = list[essayState.idx];
@@ -777,14 +788,16 @@ function finishEssay(cur, g){
   if(!box) return;
   const cover = g.cover || (g.hits||[]).map(x=>x?1:0);
   const earned = cover.reduce((a,b)=>a+b,0);
+  const full = g.full || essayFull(cur);
   const showScore = (Math.round(g.score*10)/10);
+  const pct = full ? Math.max(0, Math.min(100, Math.round(showScore / full * 100))) : 0;
   box.innerHTML = `<div class="score-card">
     <div class="score-head">
-      <span class="score-num">${showScore}<small>分</small></span>
+      <span class="score-num">${showScore}<small> / ${full} 分</small></span>
       <span class="score-src">${esc(g.source)}</span>
       <span class="score-sub">采分点覆盖 ${Math.round(earned*10)/10}/${cur.pts.length}${(g.need&&g.need<cur.pts.length)?"（任答 "+g.need+" 点即满分）":""} · 第 ${r.tries} 次作答 · 最高 ${r.best} 分</span>
     </div>
-    <div class="score-bar"><i style="width:${Math.max(0,Math.min(100,showScore))}%"></i></div>
+    <div class="score-bar"><i style="width:${pct}%"></i></div>
     ${g.comment ? `<div class="score-sub">点评：${esc(g.comment)}</div>` : ""}
     <div style="margin-top:14px;font-size:13.5px;color:var(--ink-2);font-weight:600">采分点对照 <span style="font-weight:400;color:var(--ink-3);font-size:12.5px">✓ 对上　◐ 对一半　✗ 没对上</span></div>
     ${cur.pts.map((p,i)=>{
@@ -799,7 +812,7 @@ function finishEssay(cur, g){
     </div>
   </div>`;
   const tip = document.querySelector(".essay-tip");
-  if(tip) tip.textContent = `闭卷默写要点，写完点“提交评分”。已答 ${r.tries} 次 · 最高 ${r.best} 分`;
+  if(tip) tip.textContent = `闭卷默写要点，写完点“提交评分”。本题 ${essayFull(cur)} 分 · 已答 ${r.tries} 次 · 最高 ${r.best} 分`;
 }
 function showEssayRef(){
   const list = essayList(); const cur = list[essayState.idx];
