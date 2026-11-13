@@ -465,7 +465,7 @@ function route(){
   const V = $("#view");
   if(name==="home"){ renderHome(V); }
   else if(name==="random"){ session={mode:"random",order:buildOrder("random"),pos:0,scope:null}; if(!session.order.length){emptyView(V,"随机刷题");}else{renderQuiz(V,session);} }
-  else if(name==="mistakes"){ session={mode:"mistakes",order:buildOrder("mistakes"),pos:0,scope:null}; if(!session.order.length){emptyView(V,"错题本","暂无错题，继续刷题吧");}else{renderQuiz(V,session);} }
+  else if(name==="mistakes"){ session={mode:"mistakes",order:buildOrder("mistakes"),pos:0,scope:null,revealed:new Set()}; if(!session.order.length){emptyView(V,"错题本","暂无错题，继续刷题吧");}else{renderQuiz(V,session);} }
   else if(name==="fav"){ session={mode:"fav",order:buildOrder("fav"),pos:0,scope:null}; if(!session.order.length){emptyView(V,"收藏","还没有收藏题目，刷题时点星标即可收藏");}else{renderQuiz(V,session);} }
   else if(name==="c"){ const cid=parts[1]; if(cid){ session={mode:"chapter",chapterId:cid,order:getChapter(cid).questions.map(q=>q.id),pos:0,scope:null}; renderQuiz(V,session); } }
   else if(name==="cards"){ renderCards(V); }
@@ -566,6 +566,7 @@ function renderQuiz(V, s){
         <button class="btn btn-primary" id="btn-submit" onclick="submitAnswer()">提交答案</button>
         <button class="btn btn-ok" id="btn-next" style="display:none" onclick="nextQ()">下一题 →</button>
         <button class="btn btn-ghost" id="btn-again" style="display:none" onclick="resetQ()">再答一次</button>
+        ${s.mode==="mistakes"?`<button class="btn btn-ghost" id="btn-unwrong" style="margin-left:auto;color:var(--bad)" onclick="removeFromMistakes()">移出错题本</button>`:""}
       </div>
       <div class="result" id="result"></div>
       <div class="q-nav">
@@ -580,13 +581,14 @@ function renderQuiz(V, s){
           <button class="btn btn-ghost" onclick="gotoQ(${s.pos-1})" ${s.pos===0?'disabled style="opacity:.5"':""}>← 上一题</button>
           <button class="btn btn-ghost" onclick="gotoQ(${s.pos+1})" ${s.pos>=total-1?'disabled style="opacity:.5"':""}>下一题 →</button>
           <span class="spacer"></span>
-          <span style="font-size:12.5px;color:var(--ink-3)">${s.mode==="mistakes"?"错题巩固中 · 答对自动移出错题本":(s.mode==="random"?"随机顺序":s.mode==="fav"?"收藏题":getChapter(q._ch).title)}</span>
+          <span style="font-size:12.5px;color:var(--ink-3)">${s.mode==="mistakes"?"错题巩固中 · 答对不自动移除，可手动移出":(s.mode==="random"?"随机顺序":s.mode==="fav"?"收藏题":getChapter(q._ch).title)}</span>
         </div>
       </div>
     </div>
   </div>`;
-  // 若此前已作答过，恢复作答状态并显示解析
-  if(prev && !s._fresh){
+  // 错题本进入时默认不展示旧答案：只有本轮自己提交过的题才恢复解析
+  const canRestore = prev && !s._fresh && (s.mode!=="mistakes" || (s.revealed && s.revealed.has(q.id)));
+  if(canRestore){
     restoreAnswered(q, prev);
   }
   $("#btn-fav").onclick = ()=>{ toggleFav(q.id); };
@@ -639,9 +641,8 @@ function submitAnswer(){
   rec.correct = correct;
   rec.ts = Date.now();
   state.answers[q.id] = rec;
-  if(correct){
-    if(session.mode==="mistakes"){ delete state.wrong[q.id]; }
-  }else{
+  if(session.revealed && session.revealed.add){ session.revealed.add(q.id); }
+  if(!correct){
     state.wrong[q.id] = (state.wrong[q.id]||0)+1;
   }
   saveState();
@@ -734,6 +735,23 @@ function toggleFav(qid){
   saveState(); renderPills();
   const b=$("#btn-fav"); if(b){ b.classList.toggle("on", i<0); }
   toast(i>=0?"已取消收藏":"已加入收藏");
+}
+
+function removeFromMistakes(){
+  const q = currentQ();
+  if(!q || session.mode!=="mistakes") return;
+  delete state.wrong[q.id];
+  saveState(); renderPills();
+  const idx = session.order.indexOf(q.id);
+  if(idx>=0) session.order.splice(idx,1);
+  if(!session.order.length){
+    emptyView($("#view"),"错题本","暂无错题，继续刷题吧");
+    toast("已移出错题本");
+    return;
+  }
+  session.pos = Math.min(session.pos, session.order.length-1);
+  renderQuiz($("#view"), session);
+  toast("已移出错题本 · 该题不再出现");
 }
 
 /* ================= 速记卡片 ================= */
