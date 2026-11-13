@@ -544,6 +544,8 @@ function renderRandomEmpty(V){
 
 /* ================= 简答默写 ================= */
 const ESSAY_KEY = "xzx_essay_v1";
+// 内置评分接口（部署 Cloudflare Worker 后填这里，界面不显示、用户零配置；留空则用本地评分）
+const GRADE_API_DEFAULT = "";
 let essayState = {ch:"c1", idx:0};
 let gradeCfg = (function(){ try{ return JSON.parse(localStorage.getItem("xzx_grade_cfg_v1")||"{}")||{}; }catch(e){ return {}; } })();
 function essayRec(){ try{ return JSON.parse(localStorage.getItem(ESSAY_KEY)||"{}")||{}; }catch(e){ return {}; } }
@@ -563,7 +565,7 @@ function essayBar(list,i){
 }
 function essayCfgHtml(){
   return `<div class="essay-cfg" id="essay-cfg">
-    <p>默认用本地关键词评分：离线、即时，按采分点命中给分。想换成模型评分，可填一个 OpenAI 兼容接口（网页为静态托管，不能内置我的密钥，需填你自己的地址与 Key，只存在本机浏览器）。</p>
+    <p>${GRADE_API_DEFAULT ? "已内置评分接口，点“提交评分”会走模型批改；下面留空即使用内置接口，填了就用自己的地址覆盖。" : "默认用本地关键词评分：离线、即时，按采分点命中给分。填一个兼容接口地址可改为模型评分（网页为静态托管，不能内置密钥，需填你自己的地址与 Key，只存在本机浏览器）。"}</p>
     <input id="cfg-url" placeholder="接口地址，如 https://api.openai.com/v1/chat/completions" value="${esc(gradeCfg.url||"")}">
     <div class="row">
       <input id="cfg-key" placeholder="API Key（仅存本机）" value="${esc(gradeCfg.key||"")}">
@@ -647,24 +649,31 @@ function localGrade(item, ans){
   const comment = n.length < 20 ? "字数太少，建议按“总述—分点—落脚”把要点展开。" : (hitCount >= need ? "要点都覆盖了，注意表述再精炼些。" : "");
   return {score:score, hits:hits, source:"本地评分", comment:comment, need:need};
 }
-async function remoteGrade(item, ans){
-  const cfg = gradeCfg;
-  const sys = "你是高校思政课阅卷老师。根据给定的参考采分点给学生简答默写评分，严格只输出一个JSON对象：" +
-    '{"score":0-100整数,"comment":"一句话点评，指出改进方向","miss":["未覆盖的要点"]}';
-  const user = "题目：" + item.q + "\n\n参考采分点：\n" + item.pts.map((p,i)=>(i+1)+". "+p.t).join("\n") + "\n\n学生答案：" + ans;
-  const resp = await fetch(cfg.url, {
-    method:"POST",
-    headers:{"Content-Type":"application/json","Authorization":"Bearer "+(cfg.key||"")},
-    body: JSON.stringify({model:cfg.model||"gpt-4o-mini", temperature:0.2,
-      messages:[{role:"system",content:sys},{role:"user",content:user}]})
-  });
+async function remoteGrade(item, ans, endpoint, key){
+  const sys = "你是高校思政课阅卷老师。根据给定的参考采分点给学生简答默写评分，严格只输出一个JSON对象，" +
+    '不要任何解释文字：{"score":0-100整数,"comment":"一句话点评，指出改进方向","miss":["未覆盖的要点"]}';
+  const user = "题目：" + item.q + "\n\n参考采分点：\n" + item.pts.map((p,i)=>(i+1)+". "+p.t).join("\n") +
+    "\n\n学生答案：" + ans + "\n\n（本题采分点共" + item.pts.length + "个）";
+  const headers = {"Content-Type":"application/json"};
+  if(key) headers["Authorization"] = "Bearer " + key;
+  const body = {temperature:0.2, messages:[{role:"system",content:sys},{role:"user",content:user}]};
+  if(gradeCfg.model) body.model = gradeCfg.model;
+  const resp = await fetch(endpoint, {method:"POST", headers:headers, body:JSON.stringify(body)});
   if(!resp.ok) throw new Error("HTTP "+resp.status);
   const data = await resp.json();
-  const txt = (((data||{}).choices||[])[0]||{}).message ? data.choices[0].message.content : "";
-  const m = txt.match(/\{[\s\S]*\}/);
+  const txt = (((data||{}).choices||[])[0]||{}).message ? String(data.choices[0].message.content||"") : "";
+  if(!txt) throw new Error("空返回");
+  const cleaned = txt.replace(/```json|```/g,"");
+  const m = cleaned.match(/\{[\s\S]*\}/);
   if(!m) throw new Error("返回格式不对");
-  const obj = JSON.parse(m[0]);
-  const hits = item.pts.map(p=>!(obj.miss||[]).some(x=>String(x).includes(p.t.slice(0,6))));
+  let obj;
+  try{ obj = JSON.parse(m[0]); }catch(e){
+    const sm = m[0].match(/"score"\s*:\s*"?(\d+(?:\.\d+)?)/);
+    if(!sm) throw new Error("解析失败");
+    obj = {score:Number(sm[1]), comment:"", miss:[]};
+  }
+  const missArr = Array.isArray(obj.miss) ? obj.miss.map(String) : [];
+  const hits = item.pts.map(p=>!missArr.some(x=>x.includes(p.t.slice(0,6))));
   const score = Math.max(0, Math.min(100, Math.round(Number(obj.score)||0)));
   return {score:score, hits:hits, source:"模型评分", comment:obj.comment||"", need:essayNeed(item)};
 }
@@ -672,10 +681,12 @@ function submitEssay(){
   const list = essayList(); const cur = list[essayState.idx];
   const ans = (($("#essay-input")||{}).value || "").trim();
   if(!ans){ toast("先写点内容再提交"); return; }
+  const endpoint = gradeCfg.url || GRADE_API_DEFAULT;
+  const key = gradeCfg.key || "";
   const btn = $("#btn-grade"); if(btn){ btn.disabled = true; btn.textContent = "评分中…"; }
   const done = (g)=>{ if(btn){ btn.disabled=false; btn.textContent="提交评分"; } finishEssay(cur, g); };
-  if(gradeCfg.url && gradeCfg.key){
-    remoteGrade(cur, ans).then(done).catch(function(){ toast("模型评分失败，已用本地评分"); done(localGrade(cur, ans)); });
+  if(endpoint){
+    remoteGrade(cur, ans, endpoint, key).then(done).catch(function(){ toast("模型评分失败，已用本地评分"); done(localGrade(cur, ans)); });
   }else{
     done(localGrade(cur, ans));
   }
