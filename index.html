@@ -94,6 +94,11 @@ input,textarea{font-family:inherit}
 .quiz-top .badge{font-size:12px;font-weight:600;padding:3px 11px;border-radius:20px;background:var(--red-light);color:var(--red)}
 .quiz-top .badge.fill{background:#EAF0FB;color:#2D5FA8}
 .quiz-top .badge.orig{background:var(--gold-soft);color:#8A6D1F}
+.quiz-top .badge.cntbad{background:var(--bad-bg);color:var(--bad)}
+.scope-bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;background:#F8F4EA;border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin-bottom:14px}
+.scope-bar label{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--ink-2);flex:1 1 150px;min-width:0}
+.scope-bar select{min-height:44px;font-size:15px;padding:6px 10px;border-radius:10px;border:1px solid var(--line);background:#fff;color:var(--ink);font-family:inherit;flex:1;min-width:0}
+.scope-bar .scope-count{font-size:12.5px;color:var(--ink-3);white-space:nowrap}
 .quiz-top .qmeta{font-size:12.5px;color:var(--ink-3)}
 .quiz-top .qmeta b{color:var(--ink-2)}
 .progress-line{height:6px;background:#EFEAE0;border-radius:6px;overflow:hidden;margin-bottom:16px}
@@ -431,10 +436,55 @@ let session = { mode:"chapter", chapterId:"c1", order:[], pos:0, scope:null };
 function buildOrder(mode, chapterId){
   let qs = [];
   if(mode==="chapter") qs = getChapter(chapterId).questions.slice();
-  else if(mode==="random") qs = allQuestions.slice().sort(()=>Math.random()-0.5);
+  else if(mode==="random") qs = randomPool();
   else if(mode==="mistakes") qs = wrongList().map(id=>flatById[id]).filter(Boolean);
   else if(mode==="fav") qs = state.favs.map(id=>flatById[id]).filter(Boolean);
   return qs.map(q=>q.id);
+}
+
+/* 随机刷题范围：默认全部 */
+let randomScope = {filter:"all", chapter:"all"};
+function randomPool(){
+  let pool = allQuestions.slice();
+  if(randomScope.chapter!=="all") pool = pool.filter(q=>q._ch===randomScope.chapter);
+  if(randomScope.filter==="unanswered") pool = pool.filter(q=>!state.answers[q.id]);
+  else if(randomScope.filter==="wrong") pool = pool.filter(q=>state.wrong[q.id]);
+  else if(randomScope.filter==="fav") pool = pool.filter(q=>state.favs.includes(q.id));
+  return pool;
+}
+function scopeBar(count){
+  return `<div class="scope-bar">
+    <label>范围<select id="scope-filter">
+      <option value="all">全部题目</option>
+      <option value="unanswered">未做过</option>
+      <option value="wrong">我的错题</option>
+      <option value="fav">我的收藏</option>
+    </select></label>
+    <label>章节<select id="scope-chapter">
+      <option value="all">全部章节</option>
+      ${BANK.chapters.map(c=>`<option value="${c.id}">${esc(c.title)}</option>`).join("")}
+    </select></label>
+    <span class="scope-count">共 ${count} 题</span>
+  </div>`;
+}
+function bindScopeBar(){
+  const sf=$("#scope-filter"), sc=$("#scope-chapter");
+  if(!sf||!sc) return;
+  sf.value = randomScope.filter; sc.value = randomScope.chapter;
+  sf.onchange = ()=>startRandom(sf.value, sc.value);
+  sc.onchange = ()=>startRandom(sf.value, sc.value);
+}
+function startRandom(filter, chapter){
+  randomScope = {filter:filter||"all", chapter:chapter||"all"};
+  const pool = randomPool();
+  session = {mode:"random", order:pool.map(q=>q.id).sort(()=>Math.random()-0.5), pos:0, scope:null};
+  if(!session.order.length){ renderRandomEmpty($("#view")); return; }
+  renderQuiz($("#view"), session);
+  window.scrollTo({top:0});
+}
+function renderRandomEmpty(V){
+  V.innerHTML = `<div class="quiz-wrap">${scopeBar(0)}<div class="empty">当前范围没有题目，换个范围试试</div></div>`;
+  bindScopeBar();
 }
 
 /* ================= 导航渲染 ================= */
@@ -464,7 +514,7 @@ function route(){
   const name = parts[0];
   const V = $("#view");
   if(name==="home"){ renderHome(V); }
-  else if(name==="random"){ session={mode:"random",order:buildOrder("random"),pos:0,scope:null}; if(!session.order.length){emptyView(V,"随机刷题");}else{renderQuiz(V,session);} }
+  else if(name==="random"){ const pool=randomPool(); session={mode:"random",order:pool.map(q=>q.id).sort(()=>Math.random()-0.5),pos:0,scope:null}; if(!session.order.length){renderRandomEmpty(V);}else{renderQuiz(V,session);} }
   else if(name==="mistakes"){ session={mode:"mistakes",order:buildOrder("mistakes"),pos:0,scope:null,revealed:new Set()}; if(!session.order.length){emptyView(V,"错题本","暂无错题，继续刷题吧");}else{renderQuiz(V,session);} }
   else if(name==="fav"){ session={mode:"fav",order:buildOrder("fav"),pos:0,scope:null}; if(!session.order.length){emptyView(V,"收藏","还没有收藏题目，刷题时点星标即可收藏");}else{renderQuiz(V,session);} }
   else if(name==="c"){ const cid=parts[1]; if(cid){ session={mode:"chapter",chapterId:cid,order:getChapter(cid).questions.map(q=>q.id),pos:0,scope:null}; renderQuiz(V,session); } }
@@ -546,9 +596,11 @@ function renderQuiz(V, s){
   const prev = state.answers[q.id];
   V.innerHTML = `
   <div class="quiz-wrap">
+    ${s.mode==="random"?scopeBar(total):""}
     <div class="quiz-top">
       <span class="badge ${typeCls}">${TYPE_NAME[q.type]}</span>
       ${q.orig?'<span class="badge orig">原题</span>':''}
+      ${s.mode==="mistakes"&&state.wrong[q.id]?`<span class="badge cntbad" id="badge-wcnt">错过 <b>${state.wrong[q.id]}</b> 次</span>`:""}
       <span class="qmeta">${esc(ch.title)} · 第 <b>${done}</b> / ${total} 题</span>
       <button class="icon-btn fav-star ${isFav?"on":""}" id="btn-fav" title="收藏"><svg width="18" height="18" viewBox="0 0 24 24"><path d="M12 3l2.9 5.9 6.5.9-4.7 4.6 1.1 6.5L12 18.4 6.2 21l1.1-6.5L2.6 9.8l6.5-.9z"/></svg></button>
     </div>
@@ -565,7 +617,7 @@ function renderQuiz(V, s){
       <div class="actions">
         <button class="btn btn-primary" id="btn-submit" onclick="submitAnswer()">提交答案</button>
         <button class="btn btn-ok" id="btn-next" style="display:none" onclick="nextQ()">下一题 →</button>
-        <button class="btn btn-ghost" id="btn-again" style="display:none" onclick="resetQ()">再答一次</button>
+        <button class="btn btn-ghost" id="btn-again" style="display:none" onclick="resetQ()">${s.mode==="mistakes"?"清空答案":"再答一次"}</button>
         ${s.mode==="mistakes"?`<button class="btn btn-ghost" id="btn-unwrong" style="margin-left:auto;color:var(--bad)" onclick="removeFromMistakes()">移出错题本</button>`:""}
       </div>
       <div class="result" id="result"></div>
@@ -591,6 +643,7 @@ function renderQuiz(V, s){
   if(canRestore){
     restoreAnswered(q, prev);
   }
+  if(s.mode==="random"){ bindScopeBar(); }
   $("#btn-fav").onclick = ()=>{ toggleFav(q.id); };
 }
 function pickOpt(i){
@@ -655,6 +708,8 @@ function submitAnswer(){
     <div class="ans">正确答案：<b>${esc(ansText)}</b></div>
     <div class="exp"><b>解析：</b>${esc(q.explain)}</div>`;
   renderPills(); refreshDots();
+  const wb=$("#badge-wcnt");
+  if(wb && session.mode==="mistakes"){ wb.innerHTML = `错过 <b>${state.wrong[q.id]||0}</b> 次`; }
 }
 function markOpts(pickIdx, correct){
   const q = currentQ();
